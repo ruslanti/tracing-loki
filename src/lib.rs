@@ -82,10 +82,10 @@ use tracing_subscriber::layer::Context as TracingContext;
 use tracing_subscriber::registry::LookupSpan;
 use url::Url;
 
-use ErrorInner as ErrorI;
 use level_map::LevelMap;
 use log_support::SerializeEventFieldMapStrippingLog;
 use no_subscriber::NoSubscriber;
+use ErrorInner as ErrorI;
 
 mod level_map;
 mod log_support;
@@ -140,6 +140,8 @@ impl fmt::Display for ErrorInner {
 /// The the crate's root documentation for an example.
 pub fn layer(
     loki_url: Url,
+    username: String,
+    password: Option<String>,
     mut labels: HashMap<String, String>,
     extra_fields: HashMap<String, String>,
 ) -> Result<(Layer, BackgroundTask), Error> {
@@ -149,7 +151,7 @@ pub fn layer(
             sender,
             extra_fields,
         },
-        BackgroundTask::new(loki_url, receiver, &mut labels)?,
+        BackgroundTask::new(loki_url, username, password, receiver, &mut labels)?,
     ))
 }
 
@@ -368,6 +370,8 @@ impl error::Error for BadRedirect {}
 /// The the crate's root documentation for an example.
 pub struct BackgroundTask {
     loki_url: Url,
+    username: String,
+    password: Option<String>,
     receiver: ReceiverStream<LokiEvent>,
     queues: LevelMap<SendQueue>,
     buffer: Buffer,
@@ -381,6 +385,8 @@ pub struct BackgroundTask {
 impl BackgroundTask {
     fn new(
         loki_url: Url,
+        username: String,
+        password: Option<String>,
         receiver: mpsc::Receiver<LokiEvent>,
         labels: &mut HashMap<String, String>,
     ) -> Result<BackgroundTask, Error> {
@@ -402,6 +408,8 @@ impl BackgroundTask {
             loki_url: loki_url
                 .join("/loki/api/v1/push")
                 .map_err(|_| Error(ErrorI::InvalidLokiUrl))?,
+            username,
+            password,
             queues: LevelMap::try_from_fn(|level| {
                 labels.insert("level".into(), level_str(level).into());
                 let labels_encoded = labels_to_string(labels)?;
@@ -525,7 +533,10 @@ impl Future for BackgroundTask {
                     .buffer
                     .encode(&loki::PushRequest { streams })
                     .to_owned();
-                let request_builder = self.http_client.post(self.loki_url.clone());
+                let request_builder = self
+                    .http_client
+                    .post(self.loki_url.clone())
+                    .basic_auth(self.username.clone(), self.password.clone());
                 self.send_task = Some(Box::pin(
                     async move {
                         request_builder
